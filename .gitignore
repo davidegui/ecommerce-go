@@ -1,0 +1,7 @@
+ecommerce
+ecommerce.exe
+*.exe
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
