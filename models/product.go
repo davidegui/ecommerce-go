@@ -134,6 +134,22 @@ func (p *Producto) HayStock(cantidad int) bool {
 // StockBajo indica si el producto llego al limite de alerta.
 func (p *Producto) StockBajo() bool { return p.stock <= p.stockMinimo }
 
+// Copia devuelve un producto nuevo con los mismos valores que este.
+//
+// Sirve para la concurrencia: cuando una funcion entrega un producto al resto
+// del programa, entrega una copia en vez del objeto original. Asi, si otra
+// goroutine modifica el producto del catalogo mientras alguien esta leyendo o
+// serializando el que recibio, no hay conflicto: son objetos distintos.
+func (p *Producto) Copia() *Producto {
+	return &Producto{
+		id:          p.id,
+		nombre:      p.nombre,
+		precio:      p.precio,
+		stock:       p.stock,
+		stockMinimo: p.stockMinimo,
+	}
+}
+
 // Describir implementa la interfaz Entity para Producto.
 func (p *Producto) Describir() string {
 	estado := "disponible"

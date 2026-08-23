@@ -6,11 +6,27 @@
 // Este paquete existe para que la misma logica pueda usarse desde dos lugares
 // distintos sin repetir codigo: el menu de consola y los servicios web. Ninguno
 // de los dos sabe como estan guardados los datos, solo llaman a estas funciones.
+//
+// # CONCURRENCIA
+//
+// El servidor web atiende cada peticion en una goroutine distinta, o sea que
+// varias peticiones pueden estar ejecutandose al mismo tiempo sobre las mismas
+// listas de datos.
+//
+// Si dos peticiones modificaran una lista a la vez, las dos leerian el mismo
+// estado, las dos escribirian encima, y una de las dos modificaciones se
+// perderia sin ningun aviso. A ese problema se lo llama condicion de carrera.
+//
+// Para evitarlo, este paquete protege las listas con un candado (sync.Mutex).
+// El candado garantiza que solo una goroutine a la vez pueda estar dentro de
+// las funciones que leen o modifican los datos: si una segunda goroutine llega
+// mientras la primera trabaja, se queda esperando su turno.
 package services
 
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"ecommerce/models"
 	"ecommerce/storage"
@@ -33,6 +49,17 @@ var (
 	contadorPedidos   int
 )
 
+// candado protege las listas y los contadores de accesos simultaneos.
+//
+// Antes de tocar los datos, cada funcion llama a candado.Lock(): si otra
+// goroutine ya lo tiene tomado, se queda esperando su turno. Al terminar llama
+// a candado.Unlock() para liberarlo.
+//
+// Se usa siempre con defer, asi el candado se libera aunque la funcion termine
+// antes de tiempo por un error. Olvidar liberarlo dejaria el programa colgado
+// para siempre esperando un turno que nunca llega.
+var candado sync.Mutex
+
 // Reglas de descuento de la empresa.
 // Estan como constantes para que la regla de negocio este en un solo lugar y no
 // como numeros sueltos dentro del calculo.
@@ -53,6 +80,9 @@ const (
 // porque, si se elimino un registro intermedio, contar generaria un codigo que
 // ya existe.
 func CargarDatos() error {
+	candado.Lock()
+	defer candado.Unlock()
+
 	var err error
 	if productos, err = storage.CargarProductos(); err != nil {
 		return err
@@ -101,6 +131,11 @@ func numeroDeCodigo(codigo string) int {
 
 // RegistrarProducto crea un producto nuevo, lo agrega a la lista y lo guarda.
 func RegistrarProducto(nombre string, precio float64, stock, stockMinimo int) (*models.Producto, error) {
+	// Lock toma el candado en modo exclusivo: nadie mas puede leer ni escribir
+	// hasta que esta funcion termine.
+	candado.Lock()
+	defer candado.Unlock()
+
 	contadorProductos++
 	codigo := fmt.Sprintf("P%03d", contadorProductos)
 
@@ -114,11 +149,34 @@ func RegistrarProducto(nombre string, precio float64, stock, stockMinimo int) (*
 	// append agrega al final del slice y devuelve el slice nuevo, por eso hay
 	// que reasignarlo a la lista.
 	productos = append(productos, producto)
-	return producto, storage.GuardarProductos(productos)
+	// Se devuelve una copia y no el objeto original, para que quien la reciba
+	// pueda leerla sin riesgo aunque otra goroutine modifique el catalogo.
+	return producto.Copia(), storage.GuardarProductos(productos)
 }
 
 // BuscarProducto devuelve el producto que tenga ese codigo.
+//
+// Toma el candado en modo lectura (RLock) porque solo consulta la lista sin
+// modificarla. Varias goroutines pueden ejecutar esta funcion al mismo tiempo.
 func BuscarProducto(id string) (*models.Producto, error) {
+	candado.Lock()
+	defer candado.Unlock()
+
+	producto, err := buscarProductoSinCandado(id)
+	if err != nil {
+		return nil, err
+	}
+	return producto.Copia(), nil
+}
+
+// buscarProductoSinCandado hace la busqueda sin tomar el candado.
+//
+// Existe porque Go no permite tomar dos veces el mismo candado: si una funcion
+// que ya lo tomo llamara a BuscarProducto, el programa se quedaria trabado
+// esperando un candado que el mismo tiene. Se le llama interbloqueo o deadlock.
+// Por eso las funciones internas usan esta version y solo las publicas toman
+// el candado.
+func buscarProductoSinCandado(id string) (*models.Producto, error) {
 	id = strings.ToUpper(strings.TrimSpace(id))
 	// range recorre la lista; el indice se descarta con _ porque no se usa.
 	for _, producto := range productos {
@@ -133,7 +191,10 @@ func BuscarProducto(id string) (*models.Producto, error) {
 // Un nombre vacio, un precio en cero o un stock minimo negativo significan que
 // ese dato no se debe modificar.
 func ModificarProducto(id, nombre string, precio float64, stockMinimo int) (*models.Producto, error) {
-	producto, err := BuscarProducto(id)
+	candado.Lock()
+	defer candado.Unlock()
+
+	producto, err := buscarProductoSinCandado(id)
 	if err != nil {
 		return nil, err
 	}
@@ -152,11 +213,14 @@ func ModificarProducto(id, nombre string, precio float64, stockMinimo int) (*mod
 			return nil, err
 		}
 	}
-	return producto, storage.GuardarProductos(productos)
+	return producto.Copia(), storage.GuardarProductos(productos)
 }
 
 // EliminarProducto quita un producto de la lista.
 func EliminarProducto(id string) error {
+	candado.Lock()
+	defer candado.Unlock()
+
 	id = strings.ToUpper(strings.TrimSpace(id))
 	for i, producto := range productos {
 		if producto.ID() == id {
@@ -170,17 +234,31 @@ func EliminarProducto(id string) error {
 	return fmt.Errorf("%w: %s", utils.ErrProductoNoEncontrado, id)
 }
 
-// ListarProductos devuelve el catalogo completo.
+// ListarProductos devuelve una copia del catalogo completo.
+//
+// Se devuelve una copia del slice y no el original porque, si otra goroutine
+// agrega o elimina un producto mientras quien recibe la lista la esta
+// recorriendo, el recorrido podria fallar. La copia es independiente.
 func ListarProductos() []*models.Producto {
-	return productos
+	candado.Lock()
+	defer candado.Unlock()
+
+	copia := make([]*models.Producto, 0, len(productos))
+	for _, producto := range productos {
+		copia = append(copia, producto.Copia())
+	}
+	return copia
 }
 
 // ConsultarDisponibles devuelve solo los productos que tienen stock.
 func ConsultarDisponibles() []*models.Producto {
+	candado.Lock()
+	defer candado.Unlock()
+
 	disponibles := []*models.Producto{}
 	for _, producto := range productos {
 		if producto.Stock() > 0 {
-			disponibles = append(disponibles, producto)
+			disponibles = append(disponibles, producto.Copia())
 		}
 	}
 	return disponibles
@@ -190,11 +268,14 @@ func ConsultarDisponibles() []*models.Producto {
 // La comparacion se hace en minusculas para que no distinga mayusculas, y usa
 // Contains para aceptar coincidencias parciales.
 func BuscarPorNombre(texto string) []*models.Producto {
+	candado.Lock()
+	defer candado.Unlock()
+
 	texto = strings.ToLower(strings.TrimSpace(texto))
 	encontrados := []*models.Producto{}
 	for _, producto := range productos {
 		if strings.Contains(strings.ToLower(producto.Nombre()), texto) {
-			encontrados = append(encontrados, producto)
+			encontrados = append(encontrados, producto.Copia())
 		}
 	}
 	return encontrados
@@ -206,34 +287,43 @@ func BuscarPorNombre(texto string) []*models.Producto {
 
 // ActualizarStock fija las existencias de un producto en un valor exacto.
 func ActualizarStock(id string, stock int) (*models.Producto, error) {
-	producto, err := BuscarProducto(id)
+	candado.Lock()
+	defer candado.Unlock()
+
+	producto, err := buscarProductoSinCandado(id)
 	if err != nil {
 		return nil, err
 	}
 	if err := producto.CambiarStock(stock); err != nil {
 		return nil, err
 	}
-	return producto, storage.GuardarProductos(productos)
+	return producto.Copia(), storage.GuardarProductos(productos)
 }
 
 // ReponerStock suma unidades al inventario de un producto.
 func ReponerStock(id string, cantidad int) (*models.Producto, error) {
-	producto, err := BuscarProducto(id)
+	candado.Lock()
+	defer candado.Unlock()
+
+	producto, err := buscarProductoSinCandado(id)
 	if err != nil {
 		return nil, err
 	}
 	if err := producto.AumentarStock(cantidad); err != nil {
 		return nil, err
 	}
-	return producto, storage.GuardarProductos(productos)
+	return producto.Copia(), storage.GuardarProductos(productos)
 }
 
 // AlertasStockBajo devuelve los productos que llegaron al limite minimo.
 func AlertasStockBajo() []*models.Producto {
+	candado.Lock()
+	defer candado.Unlock()
+
 	alertas := []*models.Producto{}
 	for _, producto := range productos {
 		if producto.StockBajo() {
-			alertas = append(alertas, producto)
+			alertas = append(alertas, producto.Copia())
 		}
 	}
 	return alertas
@@ -245,6 +335,9 @@ func AlertasStockBajo() []*models.Producto {
 
 // RegistrarCliente crea un cliente nuevo, lo agrega a la lista y lo guarda.
 func RegistrarCliente(nombre, email, telefono string) (*models.Cliente, error) {
+	candado.Lock()
+	defer candado.Unlock()
+
 	contadorClientes++
 	codigo := fmt.Sprintf("C%03d", contadorClientes)
 
@@ -254,11 +347,25 @@ func RegistrarCliente(nombre, email, telefono string) (*models.Cliente, error) {
 		return nil, err
 	}
 	clientes = append(clientes, cliente)
-	return cliente, storage.GuardarClientes(clientes)
+	return cliente.Copia(), storage.GuardarClientes(clientes)
 }
 
 // BuscarCliente devuelve el cliente que tenga ese codigo.
+// Toma el candado en modo lectura porque solo consulta.
 func BuscarCliente(id string) (*models.Cliente, error) {
+	candado.Lock()
+	defer candado.Unlock()
+
+	cliente, err := buscarClienteSinCandado(id)
+	if err != nil {
+		return nil, err
+	}
+	return cliente.Copia(), nil
+}
+
+// buscarClienteSinCandado busca sin tomar el candado, para usarse desde
+// funciones que ya lo tomaron.
+func buscarClienteSinCandado(id string) (*models.Cliente, error) {
 	id = strings.ToUpper(strings.TrimSpace(id))
 	for _, cliente := range clientes {
 		if cliente.ID() == id {
@@ -271,7 +378,10 @@ func BuscarCliente(id string) (*models.Cliente, error) {
 // ActualizarCliente cambia los datos de un cliente ya registrado.
 // Los campos vacios se dejan como estaban.
 func ActualizarCliente(id, nombre, email, telefono string) (*models.Cliente, error) {
-	cliente, err := BuscarCliente(id)
+	candado.Lock()
+	defer candado.Unlock()
+
+	cliente, err := buscarClienteSinCandado(id)
 	if err != nil {
 		return nil, err
 	}
@@ -290,11 +400,14 @@ func ActualizarCliente(id, nombre, email, telefono string) (*models.Cliente, err
 			return nil, err
 		}
 	}
-	return cliente, storage.GuardarClientes(clientes)
+	return cliente.Copia(), storage.GuardarClientes(clientes)
 }
 
 // EliminarCliente quita un cliente de la lista.
 func EliminarCliente(id string) error {
+	candado.Lock()
+	defer candado.Unlock()
+
 	id = strings.ToUpper(strings.TrimSpace(id))
 	for i, cliente := range clientes {
 		if cliente.ID() == id {
@@ -305,9 +418,16 @@ func EliminarCliente(id string) error {
 	return fmt.Errorf("%w: %s", utils.ErrClienteNoEncontrado, id)
 }
 
-// ListarClientes devuelve todos los clientes registrados.
+// ListarClientes devuelve una copia de la lista de clientes.
 func ListarClientes() []*models.Cliente {
-	return clientes
+	candado.Lock()
+	defer candado.Unlock()
+
+	copia := make([]*models.Cliente, 0, len(clientes))
+	for _, cliente := range clientes {
+		copia = append(copia, cliente.Copia())
+	}
+	return copia
 }
 
 // ==========================================================================
@@ -316,7 +436,10 @@ func ListarClientes() []*models.Cliente {
 
 // CrearPedido crea un pedido vacio para un cliente que exista.
 func CrearPedido(clienteID string) (*models.Pedido, error) {
-	cliente, err := BuscarCliente(clienteID)
+	candado.Lock()
+	defer candado.Unlock()
+
+	cliente, err := buscarClienteSinCandado(clienteID)
 	if err != nil {
 		return nil, err
 	}
@@ -325,11 +448,25 @@ func CrearPedido(clienteID string) (*models.Pedido, error) {
 
 	pedido := models.NuevoPedido(codigo, cliente.ID())
 	pedidos = append(pedidos, pedido)
-	return pedido, storage.GuardarPedidos(pedidos)
+	return pedido.Copia(), storage.GuardarPedidos(pedidos)
 }
 
 // BuscarPedido devuelve el pedido que tenga ese codigo.
+// Toma el candado en modo lectura porque solo consulta.
 func BuscarPedido(id string) (*models.Pedido, error) {
+	candado.Lock()
+	defer candado.Unlock()
+
+	pedido, err := buscarPedidoSinCandado(id)
+	if err != nil {
+		return nil, err
+	}
+	return pedido.Copia(), nil
+}
+
+// buscarPedidoSinCandado busca sin tomar el candado, para usarse desde
+// funciones que ya lo tomaron.
+func buscarPedidoSinCandado(id string) (*models.Pedido, error) {
 	id = strings.ToUpper(strings.TrimSpace(id))
 	for _, pedido := range pedidos {
 		if pedido.ID() == id {
@@ -344,11 +481,18 @@ func BuscarPedido(id string) (*models.Pedido, error) {
 // Revisa que haya stock suficiente, pero NO descuenta inventario todavia: el
 // descuento real ocurre unicamente al confirmar el pedido.
 func AgregarProductoAPedido(pedidoID, productoID string, cantidad int) (*models.Pedido, error) {
-	pedido, err := BuscarPedido(pedidoID)
+	// Se toma el candado exclusivo durante toda la operacion: verificar el
+	// stock y agregar la linea deben ocurrir juntos. Si otra goroutine vendiera
+	// el ultimo producto entre esas dos acciones, el pedido quedaria con una
+	// cantidad que el inventario ya no puede cubrir.
+	candado.Lock()
+	defer candado.Unlock()
+
+	pedido, err := buscarPedidoSinCandado(pedidoID)
 	if err != nil {
 		return nil, err
 	}
-	producto, err := BuscarProducto(productoID)
+	producto, err := buscarProductoSinCandado(productoID)
 	if err != nil {
 		return nil, err
 	}
@@ -364,13 +508,17 @@ func AgregarProductoAPedido(pedidoID, productoID string, cantidad int) (*models.
 		return nil, err
 	}
 	// Se recalcula el total para que el pedido quede siempre coherente.
-	if _, err := CalcularTotal(pedido); err != nil {
+	if _, err := calcularTotalSinCandado(pedido); err != nil {
 		return nil, err
 	}
-	return pedido, storage.GuardarPedidos(pedidos)
+	return pedido.Copia(), storage.GuardarPedidos(pedidos)
 }
 
 // CalcularTotal es la funcion principal del sistema.
+//
+// Nota sobre concurrencia: esta funcion NO toma el candado. Siempre se llama
+// desde funciones que ya lo tomaron, porque el calculo debe ocurrir dentro de
+// la misma operacion indivisible que agrega la linea o confirma el pedido.
 //
 // Hace tres cosas: revisa que haya stock de cada producto del pedido, suma el
 // subtotal, y aplica un descuento escalonado segun el monto. Devuelve un texto
@@ -379,6 +527,14 @@ func AgregarProductoAPedido(pedidoID, productoID string, cantidad int) (*models.
 // Si algun producto no tiene stock suficiente devuelve error y no modifica
 // nada: es preferible rechazar el pedido completo a dejarlo mal calculado.
 func CalcularTotal(pedido *models.Pedido) (string, error) {
+	candado.Lock()
+	defer candado.Unlock()
+	return calcularTotalSinCandado(pedido)
+}
+
+// calcularTotalSinCandado hace el calculo sin tomar el candado, para que la
+// usen las funciones que ya lo tienen tomado.
+func calcularTotalSinCandado(pedido *models.Pedido) (string, error) {
 	// --- PASO 1: el pedido no puede estar vacio ---
 	items := pedido.Items()
 	if len(items) == 0 {
@@ -390,7 +546,7 @@ func CalcularTotal(pedido *models.Pedido) (string, error) {
 	for _, item := range items {
 		// Se busca el producto otra vez porque el stock pudo haber cambiado
 		// desde que la linea se agrego al pedido.
-		producto, err := BuscarProducto(item.ProductoID())
+		producto, err := buscarProductoSinCandado(item.ProductoID())
 		if err != nil {
 			return "", err
 		}
@@ -438,7 +594,10 @@ func CalcularTotal(pedido *models.Pedido) (string, error) {
 
 // AplicarDescuento recalcula el total de un pedido guardado y lo devuelve.
 func AplicarDescuento(pedidoID string) (*models.Pedido, string, error) {
-	pedido, err := BuscarPedido(pedidoID)
+	candado.Lock()
+	defer candado.Unlock()
+
+	pedido, err := buscarPedidoSinCandado(pedidoID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -449,13 +608,21 @@ func AplicarDescuento(pedidoID string) (*models.Pedido, string, error) {
 	if err := storage.GuardarPedidos(pedidos); err != nil {
 		return nil, "", err
 	}
-	return pedido, explicacion, nil
+	return pedido.Copia(), explicacion, nil
 }
 
 // ConfirmarPedido cierra el pedido, descuenta el inventario de cada producto
 // vendido y devuelve las alertas de stock bajo que se generaron por la venta.
 func ConfirmarPedido(pedidoID string) (*models.Pedido, string, []*models.Producto, error) {
-	pedido, err := BuscarPedido(pedidoID)
+	// Toda la confirmacion ocurre bajo un solo candado exclusivo: recalcular el
+	// total, descontar el inventario y cerrar el pedido tienen que ser una sola
+	// operacion indivisible. Si dos personas confirmaran pedidos del mismo
+	// producto al mismo tiempo, ambas podrian pasar la validacion de stock y el
+	// inventario terminaria en negativo.
+	candado.Lock()
+	defer candado.Unlock()
+
+	pedido, err := buscarPedidoSinCandado(pedidoID)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -467,7 +634,7 @@ func ConfirmarPedido(pedidoID string) (*models.Pedido, string, []*models.Product
 
 	alertas := []*models.Producto{}
 	for _, item := range pedido.Items() {
-		producto, err := BuscarProducto(item.ProductoID())
+		producto, err := buscarProductoSinCandado(item.ProductoID())
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -476,7 +643,7 @@ func ConfirmarPedido(pedidoID string) (*models.Pedido, string, []*models.Product
 			return nil, "", nil, err
 		}
 		if producto.StockBajo() {
-			alertas = append(alertas, producto)
+			alertas = append(alertas, producto.Copia())
 		}
 	}
 	if err := pedido.Confirmar(); err != nil {
@@ -488,12 +655,19 @@ func ConfirmarPedido(pedidoID string) (*models.Pedido, string, []*models.Product
 	if err := storage.GuardarPedidos(pedidos); err != nil {
 		return nil, "", nil, err
 	}
-	return pedido, explicacion, alertas, nil
+	return pedido.Copia(), explicacion, alertas, nil
 }
 
-// ListarPedidos devuelve todos los pedidos registrados.
+// ListarPedidos devuelve una copia de la lista de pedidos.
 func ListarPedidos() []*models.Pedido {
-	return pedidos
+	candado.Lock()
+	defer candado.Unlock()
+
+	copia := make([]*models.Pedido, 0, len(pedidos))
+	for _, pedido := range pedidos {
+		copia = append(copia, pedido.Copia())
+	}
+	return copia
 }
 
 // ==========================================================================
@@ -506,15 +680,18 @@ func ListarPedidos() []*models.Pedido {
 // porque todos tienen los metodos ID() y Describir(). Por eso pueden guardarse
 // juntos y recorrerse con un solo bucle: eso es polimorfismo.
 func TodasLasEntidades() []models.Entity {
+	candado.Lock()
+	defer candado.Unlock()
+
 	lista := []models.Entity{}
 	for _, producto := range productos {
-		lista = append(lista, producto)
+		lista = append(lista, producto.Copia())
 	}
 	for _, cliente := range clientes {
-		lista = append(lista, cliente)
+		lista = append(lista, cliente.Copia())
 	}
 	for _, pedido := range pedidos {
-		lista = append(lista, pedido)
+		lista = append(lista, pedido.Copia())
 	}
 	return lista
 }

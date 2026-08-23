@@ -146,6 +146,25 @@ func (p *Pedido) Confirmar() error {
 	return nil
 }
 
+// Copia devuelve un pedido nuevo con los mismos valores que este.
+//
+// Tambien copia el slice de lineas con make y copy. Copiar solo el struct no
+// bastaria: los slices comparten el arreglo interno, asi que las dos copias
+// apuntarian al mismo detalle y modificar una afectaria a la otra.
+func (p *Pedido) Copia() *Pedido {
+	lineas := make([]ItemPedido, len(p.items))
+	copy(lineas, p.items)
+	return &Pedido{
+		id:        p.id,
+		clienteID: p.clienteID,
+		items:     lineas,
+		estado:    p.estado,
+		subtotal:  p.subtotal,
+		descuento: p.descuento,
+		total:     p.total,
+	}
+}
+
 // Describir implementa la interfaz Entity para Pedido.
 func (p *Pedido) Describir() string {
 	return fmt.Sprintf("[PEDIDO]   %-5s cliente:%-5s lineas:%2d  total:$%8.2f  (%s)",

@@ -93,6 +93,18 @@ func (c *Cliente) CambiarTelefono(telefono string) error {
 	return nil
 }
 
+// Copia devuelve un cliente nuevo con los mismos valores que este.
+// Cumple el mismo proposito que el metodo Copia de Producto: entregar datos
+// seguros de leer aunque otra goroutine este modificando el original.
+func (c *Cliente) Copia() *Cliente {
+	return &Cliente{
+		id:       c.id,
+		nombre:   c.nombre,
+		email:    c.email,
+		telefono: c.telefono,
+	}
+}
+
 // Describir implementa la interfaz Entity para Cliente.
 func (c *Cliente) Describir() string {
 	return fmt.Sprintf("[CLIENTE]  %-5s %-22s %-25s tel:%s",

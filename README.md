@@ -13,7 +13,8 @@ Desarrollar un sistema de gestión para un comercio electrónico que permita
 administrar productos, clientes, pedidos e inventario, aplicando los conceptos
 de programación orientada a objetos que ofrece Go: encapsulación mediante campos
 privados y métodos de acceso, polimorfismo mediante interfaces, manejo idiomático
-de errores, y persistencia de datos mediante serialización JSON.
+de errores, persistencia mediante serialización JSON y manejo seguro de la
+concurrencia.
 
 El sistema puede usarse de dos formas independientes: como aplicación de consola
 con menús interactivos, o como servidor web que expone sus funcionalidades a
@@ -138,6 +139,7 @@ entraría en el primer tramo y recibiría 5% en lugar de 15%.
 | **Serialización JSON** | `MarshalJSON` y `UnmarshalJSON` en cada entidad, con struct puente |
 | **Persistencia** | `storage/`: un archivo JSON por entidad en `data/` |
 | **Servicios web** | `api/server.go`: 14 endpoints con `net/http` |
+| **Concurrencia** | `services/service.go`: `sync.Mutex` protegiendo las listas compartidas |
 | **Structs, slices, maps** | Structs en `models/`, slices en las listas y en el detalle del pedido |
 
 ### Sobre la serialización
@@ -154,13 +156,57 @@ y el formato JSON.
 `UnmarshalJSON` además vuelve a validar los datos leídos del archivo, porque un
 archivo en disco puede haber sido editado a mano con valores inválidos.
 
+### Sobre la concurrencia
+
+El servidor web de Go atiende **cada petición en una goroutine distinta**. Eso
+significa que varias operaciones pueden estar ejecutándose al mismo tiempo sobre
+las mismas listas de datos.
+
+Sin protección, dos peticiones simultáneas que registren productos leerían el
+mismo estado de la lista, escribirían encima, y uno de los dos registros se
+perdería sin ningún aviso. A ese problema se lo llama **condición de carrera**.
+
+La solución fue proteger las listas con un candado (`sync.Mutex`) en
+`services/service.go`. Cada función que lee o modifica los datos toma el candado
+antes de empezar y lo libera con `defer` al terminar:
+
+```go
+func RegistrarProducto(...) (*models.Producto, error) {
+    candado.Lock()
+    defer candado.Unlock()
+    ...
+}
+```
+
+Se usa `defer` porque garantiza que el candado se libere aunque la función salga
+antes de tiempo por un error. Un candado que no se libera deja el programa
+esperando para siempre un turno que nunca llega.
+
+**Detalle importante:** el mutex de Go no es reentrante. Si una función que ya
+tomó el candado llama a otra que intenta tomarlo de nuevo, el programa se
+bloquea esperándose a sí mismo. Por eso existen versiones internas como
+`buscarProductoSinCandado`, que hacen el trabajo sin tomar el candado y son las
+que usan las funciones que ya lo tienen.
+
+#### Comprobación
+
+Go incluye un detector de condiciones de carrera:
+
+```bash
+go build -race -o ecommerce .
+```
+
+Ejecutando el servidor compilado así y lanzando 60 peticiones simultáneas de
+registro, se obtuvieron los 60 productos esperados y **cero condiciones de
+carrera detectadas**.
+
 ---
 
 ## Estado del proyecto
 
 Implementado y funcionando: los cuatro módulos completos, persistencia en JSON,
-los catorce servicios web, validaciones en todas las entidades y manejo de
-errores en toda la cadena.
+los catorce servicios web, acceso concurrente protegido, validaciones en todas
+las entidades y manejo de errores en toda la cadena.
 
 Mejoras posibles para versiones futuras: autenticación de los servicios web,
 reportes de ventas por periodo, categorías de producto e historial de cambios de
