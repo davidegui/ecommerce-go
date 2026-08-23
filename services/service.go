@@ -601,7 +601,8 @@ func AplicarDescuento(pedidoID string) (*models.Pedido, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	explicacion, err := CalcularTotal(pedido)
+	// Version sin candado: esta funcion ya lo tiene tomado.
+	explicacion, err := calcularTotalSinCandado(pedido)
 	if err != nil {
 		return nil, "", err
 	}
@@ -627,7 +628,8 @@ func ConfirmarPedido(pedidoID string) (*models.Pedido, string, []*models.Product
 		return nil, "", nil, err
 	}
 	// Se recalcula antes de confirmar: el inventario pudo cambiar.
-	explicacion, err := CalcularTotal(pedido)
+	// Se usa la version sin candado porque esta funcion ya lo tiene tomado.
+	explicacion, err := calcularTotalSinCandado(pedido)
 	if err != nil {
 		return nil, "", nil, err
 	}

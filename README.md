@@ -54,6 +54,7 @@ ecommerce/
         order.go            entidades Pedido e ItemPedido
     services/
         service.go          lógica de negocio compartida
+        reports.go          reportes concurrentes (goroutines y canales)
     storage/
         storage.go          persistencia en archivos JSON
     api/
@@ -62,6 +63,15 @@ ecommerce/
         errors.go           errores del sistema centralizados
         money.go            redondeo de valores monetarios
     data/                   archivos JSON con los datos guardados
+    *_test.go               pruebas unitarias (models/ y services/)
+```
+
+### Pruebas
+
+```bash
+go test ./...          # ejecuta las 60 pruebas
+go test -race ./...    # incluye el detector de condiciones de carrera
+go test -v ./...       # muestra el detalle de cada prueba
 ```
 
 ### Por qué está dividido así
@@ -93,8 +103,14 @@ con descuentos escalonados y confirmar descontando inventario.
 Consultar existencias, fijar un valor exacto, reponer sumando unidades y generar
 alertas automáticas cuando un producto llega a su stock mínimo.
 
+### Reportes concurrentes
+Tres reportes independientes —ventas del periodo, productos más vendidos y
+estado del inventario— calculados en paralelo mediante goroutines, cuyos
+resultados se recogen a través de un canal. Incluye además un monitor de stock
+que envía las alertas por un canal a medida que las detecta.
+
 ### Servicios web
-Catorce endpoints HTTP que exponen todas las funcionalidades anteriores y
+Dieciséis endpoints HTTP que exponen todas las funcionalidades anteriores y
 responden en JSON.
 
 ---
@@ -138,8 +154,9 @@ entraría en el primer tramo y recibiría 5% en lugar de 15%.
 | **Polimorfismo** | Los tres modelos cumplen `Entity`; una sola lista y un solo bucle los recorren |
 | **Serialización JSON** | `MarshalJSON` y `UnmarshalJSON` en cada entidad, con struct puente |
 | **Persistencia** | `storage/`: un archivo JSON por entidad en `data/` |
-| **Servicios web** | `api/server.go`: 14 endpoints con `net/http` |
-| **Concurrencia** | `services/service.go`: `sync.Mutex` protegiendo las listas compartidas |
+| **Servicios web** | `api/server.go`: 16 endpoints con `net/http` |
+| **Concurrencia** | `services/service.go`: `sync.Mutex` protegiendo las listas; `services/reports.go`: goroutines, canales y `sync.WaitGroup` |
+| **Testing** | 60 pruebas unitarias en `models/` y `services/`, ejecutables con `go test ./...` |
 | **Structs, slices, maps** | Structs en `models/`, slices en las listas y en el detalle del pedido |
 
 ### Sobre la serialización
@@ -205,7 +222,8 @@ carrera detectadas**.
 ## Estado del proyecto
 
 Implementado y funcionando: los cuatro módulos completos, persistencia en JSON,
-los catorce servicios web, acceso concurrente protegido, validaciones en todas
+los dieciséis servicios web, reportes concurrentes con goroutines y canales,
+acceso concurrente protegido, sesenta pruebas unitarias, validaciones en todas
 las entidades y manejo de errores en toda la cadena.
 
 Mejoras posibles para versiones futuras: autenticación de los servicios web,

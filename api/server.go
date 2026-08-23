@@ -497,6 +497,46 @@ func resumenSistema(w http.ResponseWriter, r *http.Request) {
 }
 
 // ==========================================================================
+// SERVICIO 14: REPORTES CONCURRENTES   ->   GET /api/reportes
+// ==========================================================================
+
+// generarReportes atiende GET /api/reportes.
+//
+// Llama a services.GenerarReportes, que calcula los tres reportes del sistema
+// en paralelo usando goroutines y devuelve los resultados por un canal.
+func generarReportes(w http.ResponseWriter, r *http.Request) {
+	reportes := services.GenerarReportes()
+
+	responderJSON(w, http.StatusOK, Respuesta{
+		Exito:   true,
+		Mensaje: fmt.Sprintf("%d reportes generados en paralelo", len(reportes)),
+		Datos:   reportes,
+	})
+}
+
+// ==========================================================================
+// SERVICIO 15: MONITOR DE ALERTAS   ->   GET /api/alertas
+// ==========================================================================
+
+// monitorearAlertas atiende GET /api/alertas.
+//
+// services.MonitorearStock devuelve un canal por el que van llegando las
+// alertas a medida que se detectan. El bucle range lee de ese canal hasta que
+// se cierra, y recien entonces se envia la respuesta completa.
+func monitorearAlertas(w http.ResponseWriter, r *http.Request) {
+	alertas := []string{}
+	for alerta := range services.MonitorearStock() {
+		alertas = append(alertas, alerta)
+	}
+
+	responderJSON(w, http.StatusOK, Respuesta{
+		Exito:   true,
+		Mensaje: fmt.Sprintf("%d alertas detectadas", len(alertas)),
+		Datos:   alertas,
+	})
+}
+
+// ==========================================================================
 // REGISTRO DE RUTAS Y ARRANQUE DEL SERVIDOR
 // ==========================================================================
 
@@ -529,6 +569,10 @@ func Iniciar(puerto int) error {
 	mux.HandleFunc("GET /api/inventario", consultarInventario)
 	mux.HandleFunc("PUT /api/inventario", actualizarInventario)
 
+	// Reportes concurrentes
+	mux.HandleFunc("GET /api/reportes", generarReportes)
+	mux.HandleFunc("GET /api/alertas", monitorearAlertas)
+
 	// Resumen general
 	mux.HandleFunc("GET /api/resumen", resumenSistema)
 
@@ -555,6 +599,9 @@ func Iniciar(puerto int) error {
 	fmt.Println("   INVENTARIO")
 	fmt.Println("     GET    /api/inventario             consultar stock")
 	fmt.Println("     PUT    /api/inventario             actualizar stock")
+	fmt.Println("   REPORTES (concurrentes)")
+	fmt.Println("     GET    /api/reportes               reportes en paralelo")
+	fmt.Println("     GET    /api/alertas                monitor de stock")
 	fmt.Println("   GENERAL")
 	fmt.Println("     GET    /api/resumen                resumen del sistema")
 	fmt.Println("\n   Presione Ctrl+C para detener el servidor.")

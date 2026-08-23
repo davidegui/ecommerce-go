@@ -197,15 +197,50 @@ La operación puede ser `"reponer"` (suma unidades al stock actual) o `"fijar"`
 
 ---
 
+## REPORTES CONCURRENTES
+
+### 14. Generar reportes en paralelo
+```
+GET /api/reportes
+```
+Calcula los tres reportes del sistema —ventas del periodo, productos más
+vendidos y estado del inventario— lanzando una goroutine por cada uno y
+recogiendo los resultados a través de un canal. Cada reporte incluye el tiempo
+que tardó su cálculo.
+
+### 15. Monitor de alertas de stock
+```
+GET /api/alertas
+```
+Revisa el inventario en una goroutine independiente y devuelve las alertas de
+stock bajo y productos agotados. Las alertas viajan por un canal a medida que
+se detectan.
+
+---
+
 ## GENERAL
 
-### 14. Resumen del sistema
+### 16. Resumen del sistema
 ```
 GET /api/resumen
 ```
 Devuelve la descripción de todos los registros —productos, clientes y pedidos—
 recorriendo una única lista de tipo `models.Entity` con un solo bucle. Es la
 demostración de **polimorfismo** del proyecto.
+
+---
+
+---
+
+# Pruebas unitarias
+
+El proyecto incluye 60 pruebas automatizadas:
+
+```bash
+go test ./...          # ejecuta todas las pruebas
+go test -race ./...    # incluye el detector de condiciones de carrera
+go test -v ./...       # muestra el detalle de cada prueba
+```
 
 ---
 
@@ -236,6 +271,10 @@ curl -X POST http://localhost:8080/api/pedidos/O001/confirmar
 
 # Ver el resumen del sistema
 curl http://localhost:8080/api/resumen
+
+# Reportes concurrentes
+curl http://localhost:8080/api/reportes
+curl http://localhost:8080/api/alertas
 ```
 
 En **Postman**: elegir el método, pegar la dirección, y en la pestaña Body

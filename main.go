@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"ecommerce/api"
 	"ecommerce/models"
@@ -50,8 +51,9 @@ func main() {
 		fmt.Println(" 2. Gestion de clientes")
 		fmt.Println(" 3. Gestion de pedidos")
 		fmt.Println(" 4. Gestion de inventario")
-		fmt.Println(" 5. Ver todo el sistema (polimorfismo)")
-		fmt.Println(" 6. Iniciar servidor web (servicios web)")
+		fmt.Println(" 5. Reportes concurrentes")
+		fmt.Println(" 6. Ver todo el sistema (polimorfismo)")
+		fmt.Println(" 7. Iniciar servidor web (servicios web)")
 		fmt.Println(" 0. Salir")
 
 		switch leerTexto("Opcion: ") {
@@ -64,8 +66,10 @@ func main() {
 		case "4":
 			menuInventario()
 		case "5":
-			verTodoElSistema()
+			menuReportes()
 		case "6":
+			verTodoElSistema()
+		case "7":
 			iniciarServidor()
 		case "0":
 			fmt.Println("Programa finalizado.")
@@ -544,6 +548,83 @@ func verAlertas() {
 		fmt.Printf("  - %-22s stock:%3d  minimo:%3d\n",
 			producto.Nombre(), producto.Stock(), producto.StockMinimo())
 	}
+}
+
+// ==========================================================================
+// MODULO DE REPORTES CONCURRENTES
+// ==========================================================================
+
+func menuReportes() {
+	for {
+		fmt.Println("\n--- REPORTES ---")
+		fmt.Println(" 1. Generar los tres reportes en paralelo")
+		fmt.Println(" 2. Monitorear alertas de stock")
+		fmt.Println(" 0. Volver")
+
+		switch leerTexto("Opcion: ") {
+		case "1":
+			generarReportes()
+		case "2":
+			monitorearStock()
+		case "0":
+			return
+		default:
+			fmt.Println("Opcion no valida.")
+		}
+	}
+}
+
+// generarReportes lanza los tres reportes al mismo tiempo y muestra los
+// resultados junto con el tiempo que tardo cada uno.
+func generarReportes() {
+	inicio := time.Now()
+	reportes := services.GenerarReportes()
+	total := time.Since(inicio)
+
+	sumaIndividual := time.Duration(0)
+	for _, reporte := range reportes {
+		fmt.Println("\n============================================")
+		fmt.Println(" " + reporte.Titulo)
+		fmt.Println("============================================")
+		if reporte.Error != "" {
+			fmt.Println("  ERROR:", reporte.Error)
+			continue
+		}
+		for _, linea := range reporte.Lineas {
+			fmt.Println("  " + linea)
+		}
+		fmt.Printf("  (calculado en %v)\n", reporte.Demora)
+		sumaIndividual += reporte.Demora
+	}
+
+	// Esta comparacion es la que demuestra que los reportes se calcularon en
+	// paralelo: el tiempo total es cercano al del reporte mas lento, no a la
+	// suma de los tres.
+	fmt.Println("\n--------------------------------------------")
+	fmt.Printf("  Suma de los tres calculos : %v\n", sumaIndividual)
+	fmt.Printf("  Tiempo real transcurrido  : %v\n", total)
+	fmt.Println("  Los tres reportes se calcularon en paralelo.")
+}
+
+// monitorearStock recibe las alertas por un canal a medida que se detectan.
+//
+// La funcion MonitorearStock devuelve el canal de inmediato y sigue revisando
+// el inventario por detras. El bucle range lee del canal hasta que este se
+// cierra, mostrando cada alerta en cuanto llega.
+func monitorearStock() {
+	fmt.Println("\nMonitoreando inventario...")
+
+	encontradas := 0
+	for alerta := range services.MonitorearStock() {
+		fmt.Println("  " + alerta)
+		encontradas++
+	}
+
+	if encontradas == 0 {
+		fmt.Println("  Sin alertas: todo el inventario esta en niveles normales.")
+		return
+	}
+	fmt.Printf("  Total de alertas: %d\n", encontradas)
 }
 
 // ==========================================================================
