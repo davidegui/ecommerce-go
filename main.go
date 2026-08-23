@@ -1,11 +1,15 @@
-// Sistema de Gestion de E-Commerce - aplicacion de consola en Go.
+// Sistema de Gestion de E-Commerce - Proyecto Final.
 //
-// Este archivo contiene los menus de la aplicacion, las listas donde se
-// guardan los datos y la logica de negocio del sistema.
+// Aplicacion desarrollada en Go que puede usarse de dos formas:
+//  1. Como aplicacion de consola, con menus interactivos.
+//  2. Como servidor web, exponiendo sus funcionalidades como servicios web
+//     que responden en formato JSON.
 //
-// Los datos se guardan en memoria mientras el programa esta abierto: al
-// cerrarlo se pierden. La persistencia en archivos JSON queda para la entrega
-// final del proyecto.
+// Las dos formas usan exactamente la misma logica de negocio, que vive en el
+// paquete services. Los datos se guardan en archivos JSON dentro de la carpeta
+// data, asi que se conservan entre ejecuciones.
+//
+// Este archivo solo se ocupa de la interaccion con el usuario por consola.
 package main
 
 import (
@@ -16,40 +20,28 @@ import (
 	"strconv"
 	"strings"
 
+	"ecommerce/api"
 	"ecommerce/models"
+	"ecommerce/services"
 	"ecommerce/utils"
 )
 
-// Listas donde se guardan los datos del sistema.
-// Son slices de punteros: guardan la direccion de cada objeto, para que al
-// modificarlo se modifique el que esta en la lista y no una copia.
-var (
-	productos []*models.Producto
-	clientes  []*models.Cliente
-	pedidos   []*models.Pedido
-)
-
-// Contadores para generar los codigos P001, C001, O001.
-var (
-	contadorProductos int
-	contadorClientes  int
-	contadorPedidos   int
-)
+// puertoServidor es el puerto donde escucha el servidor web.
+const puertoServidor = 8080
 
 // lector lee lo que el usuario escribe en el teclado.
 var lector = bufio.NewReader(os.Stdin)
 
-// Reglas de descuento de la empresa.
-// Estan como constantes para que la regla de negocio este en un solo lugar y
-// no como numeros sueltos dentro del calculo.
-const (
-	montoParaCincoPorciento  = 100.0
-	montoParaDiezPorciento   = 300.0
-	montoParaQuincePorciento = 700.0
-)
-
-// main muestra el menu principal hasta que el usuario elige salir.
+// main carga los datos guardados y muestra el menu principal.
 func main() {
+	// Al iniciar se leen los archivos JSON de la carpeta data. Si no existen,
+	// se crean vacios automaticamente.
+	if err := services.CargarDatos(); err != nil {
+		fmt.Println("Error al cargar los datos guardados:", err)
+		return
+	}
+	fmt.Println("Datos cargados desde la carpeta data/")
+
 	for {
 		fmt.Println("\n========================================")
 		fmt.Println("   SISTEMA DE GESTION DE E-COMMERCE")
@@ -59,6 +51,7 @@ func main() {
 		fmt.Println(" 3. Gestion de pedidos")
 		fmt.Println(" 4. Gestion de inventario")
 		fmt.Println(" 5. Ver todo el sistema (polimorfismo)")
+		fmt.Println(" 6. Iniciar servidor web (servicios web)")
 		fmt.Println(" 0. Salir")
 
 		switch leerTexto("Opcion: ") {
@@ -72,12 +65,23 @@ func main() {
 			menuInventario()
 		case "5":
 			verTodoElSistema()
+		case "6":
+			iniciarServidor()
 		case "0":
 			fmt.Println("Programa finalizado.")
 			return
 		default:
 			fmt.Println("Opcion no valida.")
 		}
+	}
+}
+
+// iniciarServidor levanta el servidor web.
+// Una vez iniciado, el programa se queda atendiendo peticiones y solo termina
+// con Ctrl+C, por eso esta opcion no regresa al menu.
+func iniciarServidor() {
+	if err := api.Iniciar(puertoServidor); err != nil {
+		fmt.Println("Error al iniciar el servidor:", err)
 	}
 }
 
@@ -129,44 +133,9 @@ func mostrarError(err error) {
 	if errors.Is(err, utils.ErrClienteNoEncontrado) {
 		fmt.Println("   Sugerencia: registre primero al cliente.")
 	}
-}
-
-// ==========================================================================
-// FUNCIONES DE BUSQUEDA
-// ==========================================================================
-
-// buscarProducto devuelve el producto que tenga ese codigo.
-func buscarProducto(id string) (*models.Producto, error) {
-	id = strings.ToUpper(strings.TrimSpace(id))
-	// range recorre la lista; el indice se ignora con _ porque no se usa.
-	for _, producto := range productos {
-		if producto.ID() == id {
-			return producto, nil
-		}
+	if errors.Is(err, utils.ErrArchivo) {
+		fmt.Println("   Sugerencia: verifique los permisos de la carpeta data/.")
 	}
-	return nil, fmt.Errorf("%w: %s", utils.ErrProductoNoEncontrado, id)
-}
-
-// buscarCliente devuelve el cliente que tenga ese codigo.
-func buscarCliente(id string) (*models.Cliente, error) {
-	id = strings.ToUpper(strings.TrimSpace(id))
-	for _, cliente := range clientes {
-		if cliente.ID() == id {
-			return cliente, nil
-		}
-	}
-	return nil, fmt.Errorf("%w: %s", utils.ErrClienteNoEncontrado, id)
-}
-
-// buscarPedido devuelve el pedido que tenga ese codigo.
-func buscarPedido(id string) (*models.Pedido, error) {
-	id = strings.ToUpper(strings.TrimSpace(id))
-	for _, pedido := range pedidos {
-		if pedido.ID() == id {
-			return pedido, nil
-		}
-	}
-	return nil, fmt.Errorf("%w: %s", utils.ErrPedidoNoEncontrado, id)
 }
 
 // ==========================================================================
@@ -191,9 +160,9 @@ func menuProductos() {
 		case "3":
 			eliminarProducto()
 		case "4":
-			consultarDisponibles()
+			mostrarProductos(services.ConsultarDisponibles())
 		case "5":
-			buscarPorNombre()
+			mostrarProductos(services.BuscarPorNombre(leerTexto("Texto a buscar: ")))
 		case "0":
 			return
 		default:
@@ -202,7 +171,7 @@ func menuProductos() {
 	}
 }
 
-// registrarProducto pide los datos, crea el producto y lo agrega a la lista.
+// registrarProducto pide los datos y registra un producto nuevo.
 func registrarProducto() {
 	nombre := leerTexto("Nombre: ")
 	precio, err := leerDecimal("Precio: ")
@@ -220,112 +189,69 @@ func registrarProducto() {
 		mostrarError(err)
 		return
 	}
-
-	contadorProductos++
-	codigo := fmt.Sprintf("P%03d", contadorProductos) // %03d rellena: P001
-
-	// El constructor valida los datos. Si algo esta mal devuelve error y aqui
-	// se devuelve el codigo al contador para no dejar huecos en la numeracion.
-	producto, err := models.NuevoProducto(codigo, nombre, precio, stock, minimo)
+	producto, err := services.RegistrarProducto(nombre, precio, stock, minimo)
 	if err != nil {
-		contadorProductos--
 		mostrarError(err)
 		return
 	}
-
-	// append agrega al final de la lista y devuelve el slice nuevo,
-	// por eso hay que reasignarlo.
-	productos = append(productos, producto)
 	fmt.Println("Registrado:", producto.Describir())
 }
 
-// modificarProducto cambia nombre, precio o stock minimo de un producto.
-// Los datos que el usuario deja en blanco no se modifican.
+// modificarProducto cambia los datos de un producto existente.
+// Los campos que el usuario deja en blanco no se modifican.
 func modificarProducto() {
 	id := leerTexto("Codigo del producto: ")
-	producto, err := buscarProducto(id)
-	if err != nil {
-		mostrarError(err)
-		return
-	}
 	fmt.Println("(deje en blanco lo que no quiera cambiar)")
 
-	if nombre := leerTexto("Nuevo nombre: "); nombre != "" {
-		if err := producto.CambiarNombre(nombre); err != nil {
-			mostrarError(err)
-			return
-		}
-	}
+	nombre := leerTexto("Nuevo nombre: ")
+
+	precio := 0.0
 	if texto := leerTexto("Nuevo precio: "); texto != "" {
-		precio, err := strconv.ParseFloat(strings.Replace(texto, ",", ".", 1), 64)
+		valor, err := strconv.ParseFloat(strings.Replace(texto, ",", ".", 1), 64)
 		if err != nil {
 			mostrarError(fmt.Errorf("'%s' no es un numero valido", texto))
 			return
 		}
-		if err := producto.CambiarPrecio(precio); err != nil {
-			mostrarError(err)
-			return
-		}
+		precio = valor
 	}
+
+	minimo := -1 // -1 significa "no cambiar el stock minimo"
 	if texto := leerTexto("Nuevo stock minimo: "); texto != "" {
-		minimo, err := strconv.Atoi(texto)
+		valor, err := strconv.Atoi(texto)
 		if err != nil {
 			mostrarError(fmt.Errorf("'%s' no es un numero entero", texto))
 			return
 		}
-		if err := producto.CambiarStockMinimo(minimo); err != nil {
-			mostrarError(err)
-			return
-		}
+		minimo = valor
+	}
+
+	producto, err := services.ModificarProducto(id, nombre, precio, minimo)
+	if err != nil {
+		mostrarError(err)
+		return
 	}
 	fmt.Println("Modificado:", producto.Describir())
 }
 
-// eliminarProducto quita un producto de la lista.
+// eliminarProducto quita un producto del catalogo.
 func eliminarProducto() {
-	id := strings.ToUpper(strings.TrimSpace(leerTexto("Codigo a eliminar: ")))
-	for i, producto := range productos {
-		if producto.ID() == id {
-			// Para borrar de un slice se pegan las dos partes que quedan: lo
-			// que esta antes del elemento y lo que esta despues. Los tres
-			// puntos (...) desarman el segundo slice en elementos sueltos.
-			productos = append(productos[:i], productos[i+1:]...)
-			fmt.Println("Producto eliminado.")
-			return
-		}
+	id := leerTexto("Codigo del producto a eliminar: ")
+	if err := services.EliminarProducto(id); err != nil {
+		mostrarError(err)
+		return
 	}
-	mostrarError(fmt.Errorf("%w: %s", utils.ErrProductoNoEncontrado, id))
+	fmt.Println("Producto eliminado.")
 }
 
-// consultarDisponibles muestra solo los productos que tienen stock.
-func consultarDisponibles() {
-	encontrados := 0
+// mostrarProductos imprime una lista de productos.
+func mostrarProductos(lista []*models.Producto) {
+	if len(lista) == 0 {
+		fmt.Println("No hay productos para mostrar.")
+		return
+	}
 	fmt.Println()
-	for _, producto := range productos {
-		if producto.Stock() > 0 {
-			fmt.Println(producto.Describir())
-			encontrados++
-		}
-	}
-	if encontrados == 0 {
-		fmt.Println("No hay productos disponibles.")
-	}
-}
-
-// buscarPorNombre busca productos cuyo nombre contenga el texto escrito.
-// La comparacion se hace en minusculas para que no distinga mayusculas.
-func buscarPorNombre() {
-	texto := strings.ToLower(strings.TrimSpace(leerTexto("Texto a buscar: ")))
-	encontrados := 0
-	fmt.Println()
-	for _, producto := range productos {
-		if strings.Contains(strings.ToLower(producto.Nombre()), texto) {
-			fmt.Println(producto.Describir())
-			encontrados++
-		}
-	}
-	if encontrados == 0 {
-		fmt.Println("Sin coincidencias.")
+	for _, producto := range lista {
+		fmt.Println(producto.Describir())
 	}
 }
 
@@ -348,7 +274,7 @@ func menuClientes() {
 		case "2":
 			actualizarCliente()
 		case "3":
-			consultarClientes()
+			mostrarClientes()
 		case "4":
 			eliminarCliente()
 		case "0":
@@ -359,79 +285,57 @@ func menuClientes() {
 	}
 }
 
-// registrarCliente pide los datos, crea el cliente y lo agrega a la lista.
+// registrarCliente pide los datos y registra un cliente nuevo.
 func registrarCliente() {
 	nombre := leerTexto("Nombre: ")
 	email := leerTexto("Correo: ")
 	telefono := leerTexto("Telefono: ")
 
-	contadorClientes++
-	codigo := fmt.Sprintf("C%03d", contadorClientes)
-
-	cliente, err := models.NuevoCliente(codigo, nombre, email, telefono)
+	cliente, err := services.RegistrarCliente(nombre, email, telefono)
 	if err != nil {
-		contadorClientes--
 		mostrarError(err)
 		return
 	}
-	clientes = append(clientes, cliente)
 	fmt.Println("Registrado:", cliente.Describir())
 }
 
 // actualizarCliente cambia los datos de un cliente ya registrado.
 func actualizarCliente() {
 	id := leerTexto("Codigo del cliente: ")
-	cliente, err := buscarCliente(id)
+	fmt.Println("(deje en blanco lo que no quiera cambiar)")
+	nombre := leerTexto("Nuevo nombre: ")
+	email := leerTexto("Nuevo correo: ")
+	telefono := leerTexto("Nuevo telefono: ")
+
+	cliente, err := services.ActualizarCliente(id, nombre, email, telefono)
 	if err != nil {
 		mostrarError(err)
 		return
 	}
-	fmt.Println("(deje en blanco lo que no quiera cambiar)")
-
-	if nombre := leerTexto("Nuevo nombre: "); nombre != "" {
-		if err := cliente.CambiarNombre(nombre); err != nil {
-			mostrarError(err)
-			return
-		}
-	}
-	if email := leerTexto("Nuevo correo: "); email != "" {
-		if err := cliente.CambiarEmail(email); err != nil {
-			mostrarError(err)
-			return
-		}
-	}
-	if telefono := leerTexto("Nuevo telefono: "); telefono != "" {
-		if err := cliente.CambiarTelefono(telefono); err != nil {
-			mostrarError(err)
-			return
-		}
-	}
 	fmt.Println("Actualizado:", cliente.Describir())
 }
 
-// consultarClientes muestra todos los clientes registrados.
-func consultarClientes() {
-	if len(clientes) == 0 {
+// mostrarClientes imprime todos los clientes registrados.
+func mostrarClientes() {
+	lista := services.ListarClientes()
+	if len(lista) == 0 {
 		fmt.Println("No hay clientes registrados.")
 		return
 	}
 	fmt.Println()
-	for _, cliente := range clientes {
+	for _, cliente := range lista {
 		fmt.Println(cliente.Describir())
 	}
 }
 
-// eliminarCliente quita un cliente de la lista.
+// eliminarCliente quita un cliente del sistema.
 func eliminarCliente() {
-	id := strings.ToUpper(strings.TrimSpace(leerTexto("Codigo a eliminar: ")))
-	for i, cliente := range clientes {
-		if cliente.ID() == id {
-			clientes = append(clientes[:i], clientes[i+1:]...)
-			fmt.Println("Cliente eliminado.")
-			return
-		}
+	id := leerTexto("Codigo del cliente a eliminar: ")
+	if err := services.EliminarCliente(id); err != nil {
+		mostrarError(err)
+		return
 	}
-	mostrarError(fmt.Errorf("%w: %s", utils.ErrClienteNoEncontrado, id))
+	fmt.Println("Cliente eliminado.")
 }
 
 // ==========================================================================
@@ -467,135 +371,35 @@ func menuPedidos() {
 	}
 }
 
-// crearPedido crea un pedido vacio para un cliente que exista.
+// crearPedido crea un pedido vacio para un cliente existente.
 func crearPedido() {
-	id := leerTexto("Codigo del cliente: ")
-	cliente, err := buscarCliente(id)
+	pedido, err := services.CrearPedido(leerTexto("Codigo del cliente: "))
 	if err != nil {
 		mostrarError(err)
 		return
 	}
-	contadorPedidos++
-	codigo := fmt.Sprintf("O%03d", contadorPedidos)
-
-	pedido := models.NuevoPedido(codigo, cliente.ID())
-	pedidos = append(pedidos, pedido)
 	fmt.Println("Pedido creado:", pedido.Describir())
 }
 
 // agregarProductoAPedido agrega una linea al detalle del pedido.
-// Revisa que haya stock, pero NO descuenta inventario todavia: eso ocurre
-// recien al confirmar el pedido.
 func agregarProductoAPedido() {
-	pedido, err := buscarPedido(leerTexto("Codigo del pedido: "))
-	if err != nil {
-		mostrarError(err)
-		return
-	}
-	producto, err := buscarProducto(leerTexto("Codigo del producto: "))
-	if err != nil {
-		mostrarError(err)
-		return
-	}
+	pedidoID := leerTexto("Codigo del pedido: ")
+	productoID := leerTexto("Codigo del producto: ")
 	cantidad, err := leerEntero("Cantidad: ")
 	if err != nil {
 		mostrarError(err)
 		return
 	}
-	if !producto.HayStock(cantidad) {
-		mostrarError(fmt.Errorf("%w: %s (hay %d, se pidieron %d)",
-			utils.ErrStockInsuficiente, producto.Nombre(), producto.Stock(), cantidad))
-		return
-	}
-
-	item, err := models.NuevoItem(producto.ID(), producto.Nombre(), producto.Precio(), cantidad)
-	if err != nil {
-		mostrarError(err)
-		return
-	}
-	if err := pedido.AgregarItem(item); err != nil {
-		mostrarError(err)
-		return
-	}
-	// Se recalcula el total para que el pedido quede siempre coherente.
-	if _, err := calcularTotal(pedido); err != nil {
+	if _, err := services.AgregarProductoAPedido(pedidoID, productoID, cantidad); err != nil {
 		mostrarError(err)
 		return
 	}
 	fmt.Println("Producto agregado al pedido.")
 }
 
-// calcularTotal es la funcion principal del sistema.
-//
-// Hace tres cosas: revisa que haya stock de cada producto del pedido, suma el
-// subtotal, y aplica un descuento escalonado segun el monto. Devuelve un texto
-// explicando el descuento y guarda los totales dentro del pedido.
-//
-// Si algun producto no tiene stock suficiente devuelve error y no modifica
-// nada: es preferible rechazar el pedido completo a dejarlo mal calculado.
-func calcularTotal(pedido *models.Pedido) (string, error) {
-	// --- PASO 1: el pedido no puede estar vacio ---
-	items := pedido.Items()
-	if len(items) == 0 {
-		return "", utils.ErrPedidoVacio
-	}
-
-	// --- PASO 2: sumar el subtotal y revisar el stock de cada linea ---
-	subtotal := 0.0
-	for _, item := range items {
-		// Se busca el producto otra vez porque el stock pudo haber cambiado
-		// desde que la linea se agrego al pedido.
-		producto, err := buscarProducto(item.ProductoID())
-		if err != nil {
-			return "", err
-		}
-		if !producto.HayStock(item.Cantidad()) {
-			return "", fmt.Errorf("%w: %s (hay %d, se pidieron %d)",
-				utils.ErrStockInsuficiente, producto.Nombre(),
-				producto.Stock(), item.Cantidad())
-		}
-		// El subtotal usa el precio guardado en la linea, no el precio actual
-		// del catalogo, para respetar el precio del momento de la venta.
-		subtotal += item.Subtotal()
-	}
-
-	// --- PASO 3: descuento escalonado segun el monto ---
-	// Los tramos se revisan de mayor a menor. Si estuvieran al reves, un pedido
-	// de $800 entraria en el primer tramo y recibiria 5% en vez de 15%.
-	descuento := 0.0
-	if subtotal >= montoParaQuincePorciento {
-		descuento = 15.0
-	} else if subtotal >= montoParaDiezPorciento {
-		descuento = 10.0
-	} else if subtotal >= montoParaCincoPorciento {
-		descuento = 5.0
-	}
-
-	// --- PASO 4: calcular el total final ---
-	// Se calcula primero cuanto dinero es el descuento y despues se resta, para
-	// que el descuento mostrado y el total siempre coincidan.
-	montoDescuento := subtotal * descuento / 100.0
-	total := subtotal - montoDescuento
-
-	// El pedido guarda el resultado; el texto se devuelve para mostrarlo.
-	pedido.GuardarTotales(subtotal, descuento, total)
-
-	if descuento > 0 {
-		return fmt.Sprintf("Descuento del %.0f%% aplicado (-$%.2f)",
-			descuento, montoDescuento), nil
-	}
-	return fmt.Sprintf("Sin descuento (se necesitan al menos $%.2f)",
-		montoParaCincoPorciento), nil
-}
-
 // verTotalPedido calcula el total del pedido y muestra el detalle.
 func verTotalPedido() {
-	pedido, err := buscarPedido(leerTexto("Codigo del pedido: "))
-	if err != nil {
-		mostrarError(err)
-		return
-	}
-	explicacion, err := calcularTotal(pedido)
+	pedido, explicacion, err := services.AplicarDescuento(leerTexto("Codigo del pedido: "))
 	if err != nil {
 		mostrarError(err)
 		return
@@ -603,42 +407,13 @@ func verTotalPedido() {
 	mostrarDetalle(pedido, explicacion)
 }
 
-// confirmarPedido cierra el pedido, descuenta el inventario de cada producto
-// vendido y muestra las alertas de stock bajo que se generaron.
+// confirmarPedido cierra el pedido, descuenta inventario y muestra alertas.
 func confirmarPedido() {
-	pedido, err := buscarPedido(leerTexto("Codigo del pedido: "))
+	pedido, explicacion, alertas, err := services.ConfirmarPedido(leerTexto("Codigo del pedido: "))
 	if err != nil {
 		mostrarError(err)
 		return
 	}
-	// Se recalcula antes de confirmar: el inventario pudo cambiar.
-	explicacion, err := calcularTotal(pedido)
-	if err != nil {
-		mostrarError(err)
-		return
-	}
-
-	alertas := []*models.Producto{}
-	for _, item := range pedido.Items() {
-		producto, err := buscarProducto(item.ProductoID())
-		if err != nil {
-			mostrarError(err)
-			return
-		}
-		// Aqui SI se descuenta el inventario de verdad.
-		if err := producto.DescontarStock(item.Cantidad()); err != nil {
-			mostrarError(err)
-			return
-		}
-		if producto.StockBajo() {
-			alertas = append(alertas, producto)
-		}
-	}
-	if err := pedido.Confirmar(); err != nil {
-		mostrarError(err)
-		return
-	}
-
 	mostrarDetalle(pedido, explicacion)
 	fmt.Println("PEDIDO CONFIRMADO. Inventario descontado.")
 	if len(alertas) > 0 {
@@ -652,12 +427,13 @@ func confirmarPedido() {
 
 // listarPedidos muestra todos los pedidos registrados.
 func listarPedidos() {
-	if len(pedidos) == 0 {
+	lista := services.ListarPedidos()
+	if len(lista) == 0 {
 		fmt.Println("No hay pedidos registrados.")
 		return
 	}
 	fmt.Println()
-	for _, pedido := range pedidos {
+	for _, pedido := range lista {
 		fmt.Println(pedido.Describir())
 	}
 }
@@ -712,7 +488,7 @@ func menuInventario() {
 
 // consultarStock muestra el estado de inventario de un producto.
 func consultarStock() {
-	producto, err := buscarProducto(leerTexto("Codigo del producto: "))
+	producto, err := services.BuscarProducto(leerTexto("Codigo del producto: "))
 	if err != nil {
 		mostrarError(err)
 		return
@@ -726,17 +502,14 @@ func consultarStock() {
 
 // actualizarStock fija las existencias en un valor exacto.
 func actualizarStock() {
-	producto, err := buscarProducto(leerTexto("Codigo del producto: "))
-	if err != nil {
-		mostrarError(err)
-		return
-	}
+	id := leerTexto("Codigo del producto: ")
 	cantidad, err := leerEntero("Nuevo stock: ")
 	if err != nil {
 		mostrarError(err)
 		return
 	}
-	if err := producto.CambiarStock(cantidad); err != nil {
+	producto, err := services.ActualizarStock(id, cantidad)
+	if err != nil {
 		mostrarError(err)
 		return
 	}
@@ -745,17 +518,14 @@ func actualizarStock() {
 
 // reponerStock suma unidades al inventario de un producto.
 func reponerStock() {
-	producto, err := buscarProducto(leerTexto("Codigo del producto: "))
-	if err != nil {
-		mostrarError(err)
-		return
-	}
+	id := leerTexto("Codigo del producto: ")
 	cantidad, err := leerEntero("Unidades a ingresar: ")
 	if err != nil {
 		mostrarError(err)
 		return
 	}
-	if err := producto.AumentarStock(cantidad); err != nil {
+	producto, err := services.ReponerStock(id, cantidad)
+	if err != nil {
 		mostrarError(err)
 		return
 	}
@@ -764,19 +534,15 @@ func reponerStock() {
 
 // verAlertas muestra los productos que llegaron al limite minimo.
 func verAlertas() {
-	encontrados := 0
-	for _, producto := range productos {
-		if producto.StockBajo() {
-			if encontrados == 0 {
-				fmt.Println("\n*** PRODUCTOS CON STOCK BAJO ***")
-			}
-			fmt.Printf("  - %-22s stock:%3d  minimo:%3d\n",
-				producto.Nombre(), producto.Stock(), producto.StockMinimo())
-			encontrados++
-		}
-	}
-	if encontrados == 0 {
+	alertas := services.AlertasStockBajo()
+	if len(alertas) == 0 {
 		fmt.Println("No hay alertas de stock bajo.")
+		return
+	}
+	fmt.Println("\n*** PRODUCTOS CON STOCK BAJO ***")
+	for _, producto := range alertas {
+		fmt.Printf("  - %-22s stock:%3d  minimo:%3d\n",
+			producto.Nombre(), producto.Stock(), producto.StockMinimo())
 	}
 }
 
@@ -784,33 +550,19 @@ func verAlertas() {
 // DEMOSTRACION DE POLIMORFISMO
 // ==========================================================================
 
-// verTodoElSistema guarda productos, clientes y pedidos en una misma lista de
-// tipo models.Entity y los imprime con un solo bucle.
+// verTodoElSistema imprime productos, clientes y pedidos con un solo bucle.
 //
-// Aunque son tres tipos distintos, todos cumplen la interfaz Entity porque
-// todos tienen los metodos ID() y Describir(). Go decide en el momento de la
-// ejecucion cual version de Describir() corresponde a cada elemento segun su
-// tipo real: eso es polimorfismo.
+// La funcion TodasLasEntidades devuelve una lista de tipo models.Entity que
+// contiene los tres tipos mezclados. Cada elemento ejecuta su propia version
+// del metodo Describir, y Go decide cual segun el tipo real de cada uno: eso
+// es polimorfismo.
 func verTodoElSistema() {
-	lista := []models.Entity{}
-
-	for _, producto := range productos {
-		lista = append(lista, producto)
-	}
-	for _, cliente := range clientes {
-		lista = append(lista, cliente)
-	}
-	for _, pedido := range pedidos {
-		lista = append(lista, pedido)
-	}
-
+	lista := services.TodasLasEntidades()
 	if len(lista) == 0 {
 		fmt.Println("Todavia no hay datos cargados.")
 		return
 	}
-
 	fmt.Println("\n--- TODOS LOS REGISTROS DEL SISTEMA ---")
-	// Un solo bucle imprime los tres tipos distintos.
 	for _, entidad := range lista {
 		fmt.Println(entidad.Describir())
 	}

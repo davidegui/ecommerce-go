@@ -1,7 +1,13 @@
+# Ejecutables compilados
 ecommerce
 ecommerce.exe
 *.exe
+
+# Archivos del sistema
 Thumbs.db
 desktop.ini
+.DS_Store
+
+# Configuracion de editores
 .vscode/
 .idea/

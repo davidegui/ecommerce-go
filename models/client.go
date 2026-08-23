@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -96,4 +97,47 @@ func (c *Cliente) CambiarTelefono(telefono string) error {
 func (c *Cliente) Describir() string {
 	return fmt.Sprintf("[CLIENTE]  %-5s %-22s %-25s tel:%s",
 		c.id, c.nombre, c.email, c.telefono)
+}
+
+// ==========================================================================
+// SERIALIZACION JSON
+// ==========================================================================
+
+// clienteJSON es el struct puente entre el cliente encapsulado y el JSON.
+// Cumple el mismo proposito que productoJSON: permitir la serializacion sin
+// hacer publicos los campos del struct Cliente.
+type clienteJSON struct {
+	ID       string `json:"id"`
+	Nombre   string `json:"nombre"`
+	Email    string `json:"correo"`
+	Telefono string `json:"telefono"`
+}
+
+// MarshalJSON convierte el cliente a JSON sin exponer sus campos privados.
+func (c Cliente) MarshalJSON() ([]byte, error) {
+	return json.Marshal(clienteJSON{
+		ID:       c.id,
+		Nombre:   c.nombre,
+		Email:    c.email,
+		Telefono: c.telefono,
+	})
+}
+
+// UnmarshalJSON reconstruye un cliente desde JSON validando los datos leidos.
+func (c *Cliente) UnmarshalJSON(data []byte) error {
+	var aux clienteJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return fmt.Errorf("%w: cliente con formato invalido", utils.ErrArchivoInvalido)
+	}
+	if len(strings.TrimSpace(aux.Nombre)) < 3 {
+		return utils.ErrNombreInvalido
+	}
+	if err := ValidarEmail(aux.Email); err != nil {
+		return err
+	}
+	c.id = aux.ID
+	c.nombre = aux.Nombre
+	c.email = aux.Email
+	c.telefono = aux.Telefono
+	return nil
 }

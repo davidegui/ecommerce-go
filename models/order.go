@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"ecommerce/utils"
@@ -52,12 +53,12 @@ func (i ItemPedido) Cantidad() int { return i.cantidad }
 // float64(i.cantidad) convierte el entero a decimal: Go no permite
 // multiplicar un float64 por un int directamente.
 func (i ItemPedido) Subtotal() float64 {
-	return i.precio * float64(i.cantidad)
+	return utils.RedondearDinero(i.precio * float64(i.cantidad))
 }
 
 // Pedido representa una compra de un cliente.
 // El pedido NO calcula su propio total: ese calculo necesita consultar el
-// stock real de los productos, y eso es tarea de la capa de servicios.
+// stock real de los productos, y eso se hace en la capa de logica de negocio.
 type Pedido struct {
 	id        string
 	clienteID string
@@ -126,7 +127,7 @@ func (p *Pedido) AgregarItem(item ItemPedido) error {
 	return nil
 }
 
-// GuardarTotales guarda el resultado del calculo hecho en la capa de servicios.
+// GuardarTotales guarda el resultado del calculo hecho en la logica de negocio.
 func (p *Pedido) GuardarTotales(subtotal, descuento, total float64) {
 	p.subtotal = subtotal
 	p.descuento = descuento
@@ -149,4 +150,95 @@ func (p *Pedido) Confirmar() error {
 func (p *Pedido) Describir() string {
 	return fmt.Sprintf("[PEDIDO]   %-5s cliente:%-5s lineas:%2d  total:$%8.2f  (%s)",
 		p.id, p.clienteID, len(p.items), p.total, p.estado)
+}
+
+// ==========================================================================
+// SERIALIZACION JSON
+// ==========================================================================
+
+// itemJSON es el struct puente para serializar una linea del detalle.
+type itemJSON struct {
+	ProductoID string  `json:"producto_id"`
+	Nombre     string  `json:"producto_nombre"`
+	Precio     float64 `json:"precio_unitario"`
+	Cantidad   int     `json:"cantidad"`
+	Subtotal   float64 `json:"subtotal"`
+}
+
+// MarshalJSON convierte la linea del detalle a JSON.
+// Incluye el subtotal aunque no sea un campo del struct, porque es un dato util
+// para quien consume el servicio web y evita que tenga que calcularlo.
+func (i ItemPedido) MarshalJSON() ([]byte, error) {
+	return json.Marshal(itemJSON{
+		ProductoID: i.productoID,
+		Nombre:     i.nombre,
+		Precio:     i.precio,
+		Cantidad:   i.cantidad,
+		Subtotal:   i.Subtotal(),
+	})
+}
+
+// UnmarshalJSON reconstruye una linea del detalle desde JSON.
+func (i *ItemPedido) UnmarshalJSON(data []byte) error {
+	var aux itemJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return fmt.Errorf("%w: detalle de pedido invalido", utils.ErrArchivoInvalido)
+	}
+	if aux.Cantidad <= 0 {
+		return utils.ErrCantidadInvalida
+	}
+	i.productoID = aux.ProductoID
+	i.nombre = aux.Nombre
+	i.precio = aux.Precio
+	i.cantidad = aux.Cantidad
+	return nil
+}
+
+// pedidoJSON es el struct puente para serializar el pedido completo.
+type pedidoJSON struct {
+	ID        string       `json:"id"`
+	ClienteID string       `json:"cliente_id"`
+	Items     []ItemPedido `json:"detalle"`
+	Estado    string       `json:"estado"`
+	Subtotal  float64      `json:"subtotal"`
+	Descuento float64      `json:"descuento_porcentaje"`
+	Total     float64      `json:"total"`
+}
+
+// MarshalJSON convierte el pedido y su detalle a JSON.
+//
+// El campo Items es un slice de ItemPedido, que a su vez tiene su propio
+// MarshalJSON. Cuando encoding/json llega a ese slice, llama al metodo de cada
+// elemento, asi que la serializacion se resuelve en cascada automaticamente.
+func (p Pedido) MarshalJSON() ([]byte, error) {
+	return json.Marshal(pedidoJSON{
+		ID:        p.id,
+		ClienteID: p.clienteID,
+		Items:     p.items,
+		Estado:    p.estado,
+		Subtotal:  p.subtotal,
+		Descuento: p.descuento,
+		Total:     p.total,
+	})
+}
+
+// UnmarshalJSON reconstruye el pedido desde JSON.
+func (p *Pedido) UnmarshalJSON(data []byte) error {
+	var aux pedidoJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return fmt.Errorf("%w: pedido con formato invalido", utils.ErrArchivoInvalido)
+	}
+	// Si el archivo traia el detalle vacio, se deja una lista vacia en vez de
+	// una lista nula, para que agregar items despues funcione sin problemas.
+	if aux.Items == nil {
+		aux.Items = []ItemPedido{}
+	}
+	p.id = aux.ID
+	p.clienteID = aux.ClienteID
+	p.items = aux.Items
+	p.estado = aux.Estado
+	p.subtotal = aux.Subtotal
+	p.descuento = aux.Descuento
+	p.total = aux.Total
+	return nil
 }

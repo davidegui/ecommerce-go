@@ -18,6 +18,8 @@ var (
 	ErrClienteNoEncontrado  = errors.New("cliente no encontrado")
 	ErrPedidoNoEncontrado   = errors.New("pedido no encontrado")
 	ErrStockInsuficiente    = errors.New("stock insuficiente")
+	ErrArchivoInvalido      = errors.New("el archivo de datos tiene un formato invalido")
+	ErrArchivo              = errors.New("no se pudo acceder al archivo de datos")
 	ErrPedidoVacio          = errors.New("el pedido no tiene productos")
 	ErrPedidoCerrado        = errors.New("el pedido ya fue confirmado y no se puede modificar")
 )

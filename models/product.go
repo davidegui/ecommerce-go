@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -143,4 +144,70 @@ func (p *Producto) Describir() string {
 	}
 	return fmt.Sprintf("[PRODUCTO] %-5s %-22s $%8.2f  stock:%4d  (%s)",
 		p.id, p.nombre, p.precio, p.stock, estado)
+}
+
+// ==========================================================================
+// SERIALIZACION JSON
+// ==========================================================================
+
+// productoJSON es la representacion del producto para leer y escribir JSON.
+//
+// Existe porque el paquete encoding/json solo puede ver campos exportados, es
+// decir los que empiezan en mayuscula. Como los campos de Producto son
+// privados, este struct auxiliar sirve de puente entre el objeto encapsulado y
+// el formato JSON, sin tener que romper la encapsulacion haciendo publicos los
+// campos originales.
+//
+// El texto entre acentos graves es un struct tag: le indica a encoding/json
+// como se debe llamar cada campo dentro del archivo JSON.
+type productoJSON struct {
+	ID          string  `json:"id"`
+	Nombre      string  `json:"nombre"`
+	Precio      float64 `json:"precio"`
+	Stock       int     `json:"stock"`
+	StockMinimo int     `json:"stock_minimo"`
+}
+
+// MarshalJSON convierte el producto a JSON sin exponer sus campos privados.
+//
+// Al implementar este metodo, Producto cumple la interfaz json.Marshaler de la
+// libreria estandar. Eso significa que cada vez que se serialice un producto en
+// cualquier parte del programa, encoding/json usara este metodo en lugar de su
+// comportamiento por defecto. Es otro ejemplo de polimorfismo por interfaces.
+func (p Producto) MarshalJSON() ([]byte, error) {
+	return json.Marshal(productoJSON{
+		ID:          p.id,
+		Nombre:      p.nombre,
+		Precio:      p.precio,
+		Stock:       p.stock,
+		StockMinimo: p.stockMinimo,
+	})
+}
+
+// UnmarshalJSON reconstruye un producto a partir de JSON.
+//
+// Vuelve a validar los datos leidos con las mismas reglas del constructor,
+// porque el archivo esta en disco y alguien pudo editarlo a mano poniendo por
+// ejemplo un precio negativo. Toda informacion que entra desde fuera del
+// programa se considera sospechosa hasta validarla.
+func (p *Producto) UnmarshalJSON(data []byte) error {
+	var aux productoJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return fmt.Errorf("%w: producto con formato invalido", utils.ErrArchivoInvalido)
+	}
+	if len(strings.TrimSpace(aux.Nombre)) < 3 {
+		return utils.ErrNombreInvalido
+	}
+	if aux.Precio <= 0 {
+		return utils.ErrPrecioInvalido
+	}
+	if aux.Stock < 0 || aux.StockMinimo < 0 {
+		return utils.ErrStockNegativo
+	}
+	p.id = aux.ID
+	p.nombre = aux.Nombre
+	p.precio = aux.Precio
+	p.stock = aux.Stock
+	p.stockMinimo = aux.StockMinimo
+	return nil
 }
